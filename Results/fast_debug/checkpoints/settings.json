@@ -1,0 +1,15 @@
+{
+  "retrain_every": 92,
+  "lear_retrain_every": 92,
+  "qra_refit_every": 46,
+  "chunk_days": 92,
+  "epochs": 15,
+  "patience": 3,
+  "batch_size": 32,
+  "val_fraction": 0.2,
+  "lear_n_alphas": 10,
+  "lear_cv": 3,
+  "lear_standardize": false,
+  "base_seed": 12345,
+  "tag": "fast_debug"
+}
