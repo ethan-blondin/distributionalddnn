@@ -1,11 +1,15 @@
-"""Forecasting models: LEAR, (D)DNN, naive, QRA / QRM.
+"""Forecasting models: LEAR, (D)DNN, naive, QRA.
 
 Each rolling model works on *OOS day indices* i = 0..735, i.e. absolute day
-t = N_INSAMPLE + i. Nothing here touches the disk; see runner.py.
+t = N_INSAMPLE + i. Re-fits happen on a fixed calendar: the model used for day i
+is the one fitted at the anchor a = (i // k) * k on the data before day a. A fit
+therefore never depends on how days are cut into checkpoint blocks.
+Nothing here touches the disk; see runner.py.
 """
 from __future__ import annotations
 
 import os
+import time
 import warnings
 
 import numpy as np
@@ -14,30 +18,42 @@ from scipy.optimize import linprog
 from .config import MAX_LAG, N_INSAMPLE, N_QRA, NN_TRAIN_DAYS, TAUS, RunSettings
 from .features import DailyData, column_mask
 
+
+def anchor(i: int, every: int) -> int:
+    return (i // every) * every
+
+
 # --------------------------------------------------------------------------- #
-# LEAR (lear.py): 24 hourly LassoCV models on all inputs, window `cal` days
+# LEAR (lear.py): 24 hourly LASSO models on all inputs, window `cal` days
 # --------------------------------------------------------------------------- #
+def _lear_fit_hour(X: np.ndarray, y: np.ndarray, s: RunSettings):
+    from sklearn.linear_model import Lasso, LassoCV, LassoLarsIC
+    if s.lear_method == "lassocv":
+        return LassoCV(eps=1e-6, alphas=s.lear_n_alphas, cv=s.lear_cv).fit(X, y)
+    # LassoLarsIC needs n > p + 1 to estimate the noise variance itself; for the short
+    # windows (56/84 days < 227 inputs) the sample variance of y is used (conservative).
+    nv = float(np.var(y)) if X.shape[0] <= X.shape[1] + 1 else None
+    alpha = LassoLarsIC(criterion="aic", max_iter=2500, noise_variance=nv).fit(X, y).alpha_
+    return Lasso(alpha=max(float(alpha), 1e-8), max_iter=2500).fit(X, y)
+
+
 def lear_forecast(data: DailyData, cal: int, oos_days: list[int], s: RunSettings) -> np.ndarray:
     from sklearn.exceptions import ConvergenceWarning
-    from sklearn.linear_model import LassoCV
-    from sklearn.preprocessing import StandardScaler
 
     out = np.zeros((len(oos_days), 24))
-    models = None
+    models, fitted_at = None, None
     for n, i in enumerate(oos_days):
-        t = N_INSAMPLE + i
-        if models is None or i % s.lear_retrain_every == 0:
-            rows = np.arange(t - cal + MAX_LAG, t)        # same sample as lear.py (cal - 7 days)
+        a = anchor(i, s.lear_retrain_every)
+        if a != fitted_at:
+            ta = N_INSAMPLE + a
+            rows = np.arange(ta - cal + MAX_LAG, ta)        # same sample as lear.py (cal - 7 days)
             X, Y = data.X[rows], data.Y[rows]
-            scaler = StandardScaler().fit(X) if s.lear_standardize else None
-            Xs = scaler.transform(X) if scaler else X
-            models = []
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", ConvergenceWarning)
-                for h in range(24):
-                    models.append(LassoCV(eps=1e-6, alphas=s.lear_n_alphas, cv=s.lear_cv).fit(Xs, Y[:, h]))
-        xf = data.X[t:t + 1]
-        xf = scaler.transform(xf) if scaler else xf
+                warnings.simplefilter("ignore", UserWarning)
+                models = [_lear_fit_hour(X, Y[:, h], s) for h in range(24)]
+            fitted_at = a
+        xf = data.X[N_INSAMPLE + i:N_INSAMPLE + i + 1]
         out[n] = [m.predict(xf)[0] for m in models]
     return out
 
@@ -71,7 +87,7 @@ def _transform(tf, raw, dist):
     return p
 
 
-def build_nn(params: dict, n_inputs: int, dist: str | None, threads: int = 2):
+def build_nn(params: dict, n_inputs: int, dist: str | None, threads: int = 1):
     tf, keras = _tf(threads)
     reg = keras.regularizers.L1
     inputs = keras.Input(shape=(n_inputs,))
@@ -106,37 +122,58 @@ def build_nn(params: dict, n_inputs: int, dist: str | None, threads: int = 2):
     return model
 
 
+FIT_KEYS = ("fit_anchor", "fit_epochs", "fit_best_epoch", "fit_best_val_loss", "fit_hit_cap", "fit_seconds")
+
+
 def nn_forecast(data: DailyData, params: dict, dist: str | None, oos_days: list[int], s: RunSettings,
                 seed: int) -> dict[str, np.ndarray]:
-    """Rolling (re)training on the last 1,449 days; returns {'point'} or distribution params."""
+    """Rolling (re)training on the last 1,449 days.
+
+    Returns {'point'} or the distribution parameters per day, plus one row of
+    diagnostics per fit (keys starting with 'fit_').
+    """
     tf, keras = _tf(s.tf_threads)
     mask = column_mask(params)
     names = PARAM_NAMES[dist] or ["point"]
     out = {k: np.zeros((len(oos_days), 24)) for k in names}
-    model = None
+    diag = {k: [] for k in FIT_KEYS}
+    model, fitted_at = None, None
     for n, i in enumerate(oos_days):
-        t = N_INSAMPLE + i
-        if model is None or i % s.retrain_every == 0:
+        a = anchor(i, s.retrain_every)
+        if a != fitted_at:
+            ta = N_INSAMPLE + a
             keras.backend.clear_session()
-            day_seed = seed + t
+            day_seed = seed + ta
             tf.keras.utils.set_random_seed(day_seed)
             rng = np.random.default_rng(day_seed)
-            rows = np.arange(t - NN_TRAIN_DAYS, t)
+            rows = np.arange(ta - NN_TRAIN_DAYS, ta)
             X, Y = data.X[rows][:, mask].astype("float32"), data.Y[rows].astype("float32")
             perm = rng.permutation(len(rows))
             n_tr = int((1 - s.val_fraction) * len(perm))
             tr, va = perm[:n_tr], perm[n_tr:]
             model = build_nn(params, int(mask.sum()), dist, s.tf_threads)
             cb = [keras.callbacks.EarlyStopping(patience=s.patience, restore_best_weights=True)]
-            model.fit(X[tr], Y[tr], validation_data=(X[va], Y[va]), epochs=s.epochs,
-                      batch_size=s.batch_size, callbacks=cb, verbose=0)
-        raw = model(data.X[t:t + 1][:, mask].astype("float32"), training=False)
+            t0 = time.time()
+            hist = model.fit(X[tr], Y[tr], validation_data=(X[va], Y[va]), epochs=s.epochs,
+                             batch_size=s.batch_size, callbacks=cb, verbose=0).history
+            val = np.asarray(hist["val_loss"], dtype=float)
+            ran, best = len(val), int(np.nanargmin(val)) + 1
+            diag["fit_anchor"].append(a)
+            diag["fit_epochs"].append(ran)
+            diag["fit_best_epoch"].append(best)
+            diag["fit_best_val_loss"].append(float(np.nanmin(val)))
+            # early stopping never triggered: training was cut by the epoch limit
+            diag["fit_hit_cap"].append(ran >= s.epochs and ran - best < s.patience)
+            diag["fit_seconds"].append(time.time() - t0)
+            fitted_at = a
+        raw = model(data.X[N_INSAMPLE + i:N_INSAMPLE + i + 1][:, mask].astype("float32"), training=False)
         if dist is None:
             out["point"][n] = raw.numpy()[0]
         else:
             p = _transform(tf, raw, dist)
             for k in names:
                 out[k][n] = p[k].numpy()[0]
+    out.update({k: np.asarray(v) for k, v in diag.items()})
     return out
 
 
@@ -169,7 +206,7 @@ def naive_quantiles(data: DailyData, oos_days: list[int]) -> tuple[np.ndarray, n
 
 
 # --------------------------------------------------------------------------- #
-# QRA / QRM (QRA.py): pooled-hour linear quantile regression on 182 OOS days
+# QRA (QRA.py): pooled-hour linear quantile regression on 182 OOS days
 # --------------------------------------------------------------------------- #
 def quantile_regression(X: np.ndarray, y: np.ndarray, tau: float) -> np.ndarray:
     """Exact linear quantile regression via the LP dual (HiGHS).
@@ -189,23 +226,24 @@ def quantile_regression(X: np.ndarray, y: np.ndarray, tau: float) -> np.ndarray:
     raise RuntimeError(f"Quantile regression failed (tau={tau}): {res.message}")
 
 
-def qra_forecast(forecasts: np.ndarray, actuals: np.ndarray, test_days: list[int], s: RunSettings,
-                 average: bool) -> np.ndarray:
+def qra_forecast(forecasts: np.ndarray, actuals: np.ndarray, test_days: list[int], s: RunSettings) -> np.ndarray:
     """forecasts: (736, 24, K) OOS point forecasts; actuals (736, 24).
 
-    QRA: regressors = the K forecasts + intercept; QRM: their mean + intercept.
-    Quantiles are sorted per hour to avoid crossing (as in QRA.py).
-    test_days are indices 0..553 of the test period (OOS index N_QRA + j).
+    QRA: regressors = the K point forecasts + intercept, calibrated on the 182
+    days before the anchor day. Quantiles are sorted per hour to avoid crossing
+    (as in QRA.py). test_days are indices 0..553 of the test period (OOS index N_QRA + j).
     """
-    F = forecasts.mean(-1, keepdims=True) if average else forecasts
     out = np.zeros((len(test_days), 24, len(TAUS)))
-    betas = None
+    betas, fitted_at = None, None
     for n, j in enumerate(test_days):
-        i = N_QRA + j
-        if betas is None or j % s.qra_refit_every == 0:
-            Xc = np.concatenate([F[i - N_QRA:i].reshape(-1, F.shape[-1]), np.ones((N_QRA * 24, 1))], axis=1)
-            yc = actuals[i - N_QRA:i].reshape(-1)
+        a = anchor(j, s.qra_refit_every)
+        if a != fitted_at:
+            ia = N_QRA + a
+            Xc = np.concatenate([forecasts[ia - N_QRA:ia].reshape(-1, forecasts.shape[-1]),
+                                 np.ones((N_QRA * 24, 1))], axis=1)
+            yc = actuals[ia - N_QRA:ia].reshape(-1)
             betas = np.column_stack([quantile_regression(Xc, yc, tau) for tau in TAUS])   # (K+1, T)
-        Xf = np.concatenate([F[i], np.ones((24, 1))], axis=1)
+            fitted_at = a
+        Xf = np.concatenate([forecasts[N_QRA + j], np.ones((24, 1))], axis=1)
         out[n] = np.sort(Xf @ betas, axis=1)
     return out

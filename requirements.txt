@@ -1,0 +1,17 @@
+# Python 3.13 (tested with 3.13.7). Versions are those used for Results/neural_w7.
+# Setup:  python -m venv .venv  ->  activate  ->  pip install -r requirements.txt
+numpy==2.5.5
+pandas==3.1.1          # the result pickles need pandas >= 3 to load
+scipy==1.18.1
+scikit-learn==1.9.1
+matplotlib==3.11.2
+
+# neural networks
+tensorflow==2.21.0
+tensorflow-probability==0.25.0
+tf_keras==2.21.0        # legacy Keras 2 (TF_USE_LEGACY_KERAS=1)
+
+# hyper-parameter trials (trialfiles/) and notebook
+optuna==5.1.0
+nbformat==5.11.1
+ipykernel==7.4.0

@@ -1,3 +1,6 @@
+# specific pkl file too large to put on github
+aggregated_ddnn_comparison.pkl
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -127,3 +130,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# debug / smoke-test runs (regenerable, numbers not meaningful)
+Results/smoke_test/

@@ -12,26 +12,29 @@ code = lambda s: cells.append(nbf.v4.new_code_cell(s.strip("\n")))    # noqa: E7
 md(r"""
 # DDNN comparative analysis — 2015–2020 vs 2020–2026
 
-Stage 2 of the comparison of the distributional deep neural network of
-Marcjasz, Narajewski, Weron & Ziel (2022) on the original window (**2015-01-01 → 2020-12-31**)
-and an updated window (**2020-11-19 → 2026-11-19**), each 2,192 days.
+Comparison of the distributional deep neural network of Marcjasz, Narajewski, Weron & Ziel (2022)
+on the original window (**2015-01-01 → 2020-12-31**) and an updated window
+(**2020-11-19 → 2026-11-19**), each 2,192 days, evaluated **separately** with the same protocol.
 
-This notebook **does not train anything**. It only reads
+This notebook **does not train anything**. It reads
 
 * `Datasets/DE_dataset_2015-2020.csv`, `Datasets/DE_dataset_2020-2026.csv`
-* `Results/aggregated_ddnn_comparison.pkl` (produced by `run_comparative_experiments.py`;
-  falls back to `Results/fast_debug/…` if the full run has not been made yet)
+* `Results/<RESULTS_TAG>/aggregated_ddnn_comparison.pkl`, written by `run_comparative_experiments.py`
+  (set `RESULTS_TAG` below, or the environment variable `DDNN_RESULTS_TAG`).
+
+**Models:** `naive`, `DNN-1/2` → `DNN-Ens`, `DNN-QRA`; `DDNN-JSU-1/2` → `DDNN-JSU-pEns`, `DDNN-JSU-qEns`;
+optionally `LEAR-56/84/1092/1456` → `LEAR-Ens`, `LEAR-QRA` when the run includes LEAR.
 
 **Splits (both horizons):** 1,092 training days → 364 validation days (in-sample = 1,456 days) →
-182 QRA/QRM calibration days → 554 test days.
+182 QRA calibration days → 554 test days.
 
-**Set-up choices:** hyper-parameters and input selections are the best trials of the paper's
-12 Optuna studies (`trialfiles/`), re-used unchanged on both horizons (no re-tuning), so the
-2020–2026 results measure the *out-of-sample generalisation* of the paper's architecture.
-Three flaws of the published code are fixed for both horizons (see the appendix).
+**Set-up:** hyper-parameters and input selections are the best trials of runs 1–2 of the paper's Optuna
+studies (`trialfiles/`), re-used unchanged on both horizons (no re-tuning). Section 0 lists the run settings,
+the convergence diagnostics of every network fit and the limitations of the protocol — read it first.
 """)
 
 code(r"""
+import os
 import pickle
 from pathlib import Path
 
@@ -43,20 +46,26 @@ from matplotlib.colors import LinearSegmentedColormap
 from scipy import stats
 
 ROOT = Path.cwd()
+RESULTS_TAG = os.environ.get("DDNN_RESULTS_TAG", "neural_w7")        # folder under Results/
+RESULTS_PATH = ROOT / "Results" / RESULTS_TAG / "aggregated_ddnn_comparison.pkl"
+if not RESULTS_PATH.exists():
+    available = sorted(p.parent.name for p in (ROOT / "Results").glob("*/aggregated_ddnn_comparison.pkl"))
+    raise FileNotFoundError(f"{RESULTS_PATH} not found - run run_comparative_experiments.py first. "
+                            f"Tags with results: {available}")
 DATA = {"2015-2020": ROOT / "Datasets" / "DE_dataset_2015-2020.csv",
         "2020-2026": ROOT / "Datasets" / "DE_dataset_2020-2026.csv"}
-CANDIDATES = [ROOT / "Results" / "aggregated_ddnn_comparison.pkl",
-              ROOT / "Results" / "fast_debug" / "aggregated_ddnn_comparison.pkl"]
-RESULTS_PATH = next(p for p in CANDIDATES if p.exists())
 
 with open(RESULTS_PATH, "rb") as fh:
     R = pickle.load(fh)
 META, H = R["meta"], R["horizons"]
+MODELS, RUNS = META["models"], META["runs"]
+HAS_LEAR = "LEAR" in META["groups"]
 frames = {h: pd.read_csv(p, index_col=0, parse_dates=True) for h, p in DATA.items()}
 
-print(f"Results : {RESULTS_PATH.relative_to(ROOT)}  (created {META['created']}, mode = {META['settings']['tag']})")
-if META["settings"]["tag"] != "full":
-    print("WARNING: fast-debug artifact - sparse retraining / few epochs, numbers are NOT meaningful.")
+print(f"Results : {RESULTS_PATH.relative_to(ROOT)}  (created {META['created']}, tag = {META['settings']['tag']})")
+print(f"Models  : {META['groups']}")
+if META["settings"].get("debug"):
+    print("WARNING: debug artifact - sparse retraining / few epochs, numbers are NOT meaningful.")
 for h, df in frames.items():
     print(f"{h}: {df.index[0]} -> {df.index[-1]}  ({len(df):,} rows)")
 """)
@@ -65,7 +74,8 @@ code(r"""
 # ---- shared style (reference palette: categorical slots, blue sequential ramp) ----
 C_HOR = {"2015-2020": "#2a78d6", "2020-2026": "#eb6834"}          # slot 1 / slot 2
 C_FUEL = {"API2_Coal": "#2a78d6", "Brent_oil": "#eb6834", "TTF_Gas": "#1baf7a"}
-C_BENCH = {"LEAR-QRA": "#2a78d6", "LEAR-QRM": "#eb6834", "DNN-QRA": "#1baf7a", "DNN-QRM": "#eda100"}
+C_BENCH = {"LEAR-QRA": "#2a78d6", "DNN-QRA": "#1baf7a"}
+C_MODEL = {"DNN-1": "#1baf7a", "DNN-2": "#0f7a55", "DDNN-JSU-1": "#6250d6", "DDNN-JSU-2": "#e34948"}
 PI_FILL = {98: "#cde2fb", 90: "#86b6ef", 50: "#2a78d6"}             # sequential blue, light -> dark
 INK, MUTED, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 OVERLAP = (pd.Timestamp("2020-11-19"), pd.Timestamp("2020-12-31 23:00"))
@@ -83,6 +93,75 @@ def boundaries(h):
     return [("Validation", s["val_start"]), ("QRA calibration", s["qra_start"]), ("Out-of-sample test", s["test_start"])]
 
 print(pd.DataFrame({h: {k: v.date() for k, v in H[h]["splits"].items()} for h in H}))
+""")
+
+# --------------------------------------------------------------------------- #
+md(r"""
+## 0. Run settings, convergence & limitations
+
+**How to read the results.** Each network is re-trained every `retrain_every` days on the trailing
+1,449 usable days (early stopping on a random 20 % split) and its weights are reused for the following
+days with fresh daily inputs. A fit is *converged* when early stopping triggered before the epoch limit;
+fits that **hit the limit** were still improving and make the run under-trained. The gap between run 1
+and run 2 of the same family is the noise floor of the comparison.
+""")
+
+code(r"""
+s = META["settings"]
+print(f"NN re-fit every {s['retrain_every']} d | max epochs {s['epochs']} (patience {s['patience']}) | "
+      f"QRA re-fit every {s['qra_refit_every']} d | LEAR: {'on, ' + s['lear_method'] if HAS_LEAR else 'off'} | "
+      f"{s['n_jobs']} workers x {s['tf_threads']} thread")
+
+diag = pd.concat([H[h]["fit_diagnostics"].assign(horizon=LABEL[h]) for h in H], ignore_index=True)
+conv = diag.groupby(["horizon", "model"]).agg(
+    fits=("epochs", "size"), epochs_median=("epochs", "median"),
+    epochs_p90=("epochs", lambda x: x.quantile(0.9)), best_epoch_median=("best_epoch", "median"),
+    hit_epoch_cap=("hit_cap", "mean"), best_val_loss_median=("best_val_loss", "median"),
+    minutes_per_fit=("seconds", lambda x: x.mean() / 60))
+share = diag["hit_cap"].mean()
+print(f"Fits that hit the epoch limit: {share:.1%} of {len(diag)} -> "
+      + ("OK, all fits converged by early stopping." if share == 0 else
+         "UNDER-TRAINED fits present - treat the affected models with caution."))
+conv.style.format({"epochs_median": "{:.0f}", "epochs_p90": "{:.0f}", "best_epoch_median": "{:.0f}",
+                   "hit_epoch_cap": "{:.0%}", "best_val_loss_median": "{:.3f}", "minutes_per_fit": "{:.1f}"})
+""")
+
+code(r"""
+# stopping epoch of every fit over time (one point per weekly re-fit)
+fig, axes = plt.subplots(1, 2, figsize=(13, 3.4), sharey=True)
+for ax, h in zip(axes, H):
+    d = H[h]["fit_diagnostics"]
+    for m, g in d.groupby("model"):
+        ax.plot(g["fit_date"], g["epochs"], marker="o", ms=2.5, lw=0.8, color=C_MODEL.get(m, MUTED), label=m)
+    ax.axhline(s["epochs"], color=MUTED, ls=":", lw=1)
+    loc = mdates.AutoDateLocator(maxticks=7)
+    ax.xaxis.set_major_locator(loc)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
+    ax.set_title(LABEL[h])
+    ax.set_ylabel("epochs run (early stopping)")
+axes[1].legend(loc="center left", bbox_to_anchor=(1.01, 0.5))
+fig.tight_layout()
+plt.show()
+""")
+
+code(r"""
+# noise floor: gap between the two runs of each family (test period)
+rows = []
+for h in H:
+    mt = H[h]["metrics_table"]
+    for fam, metric in (("DNN", "MAE"), ("DDNN-JSU", "CRPS")):
+        names = [f"{fam}-{r}" for r in RUNS]
+        if all(n in mt.index for n in names):
+            v = mt.loc[names, metric].to_numpy(dtype=float)
+            rows.append({"horizon": LABEL[h], "family": fam, "metric": metric,
+                         **{n: x for n, x in zip(names, v)}, "gap (% of mean)": 100 * abs(v[0] - v[1]) / v.mean()})
+pd.DataFrame(rows).set_index(["horizon", "family"]).style.format(precision=2)
+""")
+
+code(r"""
+print("Limitations of this protocol:")
+for i, t in enumerate(META["limitations"], 1):
+    print(f"{i}. {t}")
 """)
 
 # --------------------------------------------------------------------------- #
@@ -105,15 +184,15 @@ def overview(start=None, end=None, hourly_lw=0.25):
     fig, axes = plt.subplots(5, 1, figsize=(13, 12), sharex=True)
     for ax, (col, label, k) in zip(axes, PANELS):
         for h, df in frames.items():
-            s = df[col].loc[start:end] * k
-            ax.plot(s.index, s.values, color=C_HOR[h], lw=hourly_lw if col != "EUA" else 1.0,
+            s_ = df[col].loc[start:end] * k
+            ax.plot(s_.index, s_.values, color=C_HOR[h], lw=hourly_lw if col != "EUA" else 1.0,
                     label=f"{LABEL[h]} dataset")
         ax.set_ylabel(label)
     ax = axes[4]
     for col, label in FUELS:
         for h, df in frames.items():
-            s = df[col].loc[start:end]
-            ax.plot(s.index, s.values, color=C_FUEL[col], lw=1.0, ls="-" if h == "2015-2020" else "--",
+            s_ = df[col].loc[start:end]
+            ax.plot(s_.index, s_.values, color=C_FUEL[col], lw=1.0, ls="-" if h == "2015-2020" else "--",
                     label=f"{label} – {LABEL[h]}")
     ax.set_ylabel("Fuel prices")
     lo = pd.Timestamp(start) if start else min(df.index[0] for df in frames.values())
@@ -155,9 +234,9 @@ plt.show()
 md(r"""
 ### 1b. Zoom on the overlap window
 
-Both datasets drawn over the 43 overlap days (±3 weeks). Price is identical by construction for
-the shared days; load/RES differ slightly (2015–2020 power data come from `DE.csv`, 2020–2026 from
-SMARD) and the daily commodity series differ by the source of the raw quotes.
+Both datasets drawn over the 43 overlap days (±3 weeks). Price and the daily commodity series are
+identical on the shared days; load differs by ~1 % (2015–2020 power data come from `DE.csv`,
+2020–2026 from SMARD).
 """)
 
 code(r"""
@@ -219,19 +298,23 @@ used in the network.
 
 # --------------------------------------------------------------------------- #
 md(r"""
-## 3. Accuracy & coverage of benchmarks and ensembles (adaptation of Table 1)
+## 3. Accuracy & coverage (adaptation of Table 1)
 
 Test period: last 554 days of each horizon. MAE from the median, RMSE from the mean, CRPS = mean
-pinball loss over 99 percentiles, Rel. CRPS = % improvement over LEAR-QRA (positive = better),
+pinball loss over 99 percentiles, Rel. CRPS = % improvement over the reference (positive = better),
 Kupiec = number of hours (out of 24) for which the 50 % / 90 % PI passes the coverage test at 5 %.
-Point models (LEAR-Ens, DNN-Ens) have no CRPS / Kupiec. **Bold** = best value in each column.
+Point models (`*-Ens`) have no CRPS / Kupiec. **Bold** = best value in each column.
+
+Absolute scores (EUR/MWh) are **not comparable across horizons** (different price levels and
+volatility); compare the horizons with the relative columns and the ranking table below.
 """)
 
 code(r"""
-TABLE1 = ["LEAR-Ens", "DNN-Ens", "naive", "LEAR-QRA", "LEAR-QRM", "DNN-QRA", "DNN-QRM",
-          "DDNN-N-pEns", "DDNN-N-qEns", "DDNN-JSU-pEns", "DDNN-JSU-qEns"]
-COLS = {"MAE": "MAE", "RMSE": "RMSE", "CRPS": "CRPS (Pinball)", "Rel_CRPS_vs_LEAR_QRA": "Rel. CRPS (% vs LEAR-QRA)",
-        "Kupiec_50_passed_hours": "Kupiec 50% (hrs/24)", "Kupiec_90_passed_hours": "Kupiec 90% (hrs/24)"}
+TABLE1 = MODELS["table1"]
+COLS = {"MAE": "MAE", "RMSE": "RMSE", "CRPS": "CRPS (Pinball)", "Rel_CRPS_vs_Naive": "Rel. CRPS (% vs naive)"}
+if HAS_LEAR:
+    COLS["Rel_CRPS_vs_LEAR_QRA"] = "Rel. CRPS (% vs LEAR-QRA)"
+COLS.update({"Kupiec_50_passed_hours": "Kupiec 50% (hrs/24)", "Kupiec_90_passed_hours": "Kupiec 90% (hrs/24)"})
 table1 = pd.concat({LABEL[h]: H[h]["metrics_table"].loc[TABLE1, list(COLS)].rename(columns=COLS) for h in H}, axis=1)
 
 def bold_best(col):
@@ -243,6 +326,15 @@ table1.style.apply(bold_best, axis=0).format(fmt, na_rep="")
 """)
 
 code(r"""
+# cross-horizon view: relative CRPS and CRPS rank of each probabilistic model within its horizon
+prob = MODELS["dm"]
+rel = pd.DataFrame({LABEL[h]: H[h]["metrics_table"].loc[prob, "Rel_CRPS_vs_Naive"] for h in H})
+rank = pd.DataFrame({LABEL[h]: H[h]["metrics_table"].loc[prob, "CRPS"].rank().astype(int) for h in H})
+cross = pd.concat({"Rel. CRPS (% vs naive)": rel, "CRPS rank (1 = best)": rank}, axis=1)
+cross.style.format({c: ("{:.0f}" if c[0].startswith("CRPS rank") else "{:.2f}") for c in cross.columns})
+""")
+
+code(r"""
 # all models (incl. individual runs) for reference
 pd.concat({LABEL[h]: H[h]["metrics_table"] for h in H}, axis=1).style.format("{:.2f}", na_rep="")
 """)
@@ -251,27 +343,26 @@ pd.concat({LABEL[h]: H[h]["metrics_table"] for h in H}, axis=1).style.format("{:
 md(r"""
 ## 4. CRPS dispersion & Diebold–Mariano tests (adaptations of Figures 5 & 6)
 
-**Left/right:** pinball score of the 4 individual DDNN runs (×), their probability mixture
-pEns (X) and quantile average qEns (O), for the Normal and JSU variants, against the
-QRA/QRM benchmarks (horizontal lines). Each horizon has its own y-scale (price levels differ
-strongly between eras).
+Pinball score of the individual DDNN-JSU runs (×), their probability mixture pEns (X) and quantile
+average qEns (O), against the QRA benchmarks (horizontal lines). Each horizon has its own y-scale
+(price levels differ strongly between eras).
 """)
 
 code(r"""
-fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
+fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
 for ax, h in zip(axes, H):
     mt = H[h]["metrics_table"]["CRPS"]
-    for x, fam in enumerate(["DDNN-N", "DDNN-JSU"]):
-        runs = [mt[f"{fam}-{r}"] for r in range(1, 5)]
-        ax.scatter([x - 0.12] * 4, runs, marker="x", s=45, color=INK, label="individual runs" if x == 0 else None)
-        ax.scatter([x + 0.05], [mt[f"{fam}-pEns"]], marker="X", s=110, color="#6250d6",
-                   edgecolor="white", linewidth=1.5, label="pEns" if x == 0 else None, zorder=3)
-        ax.scatter([x + 0.18], [mt[f"{fam}-qEns"]], marker="o", s=80, facecolor="none",
-                   edgecolor="#e34948", linewidth=2, label="qEns" if x == 0 else None, zorder=3)
+    runs = [mt[f"DDNN-JSU-{r}"] for r in RUNS]
+    ax.scatter([-0.12] * len(runs), runs, marker="x", s=45, color=INK, label="individual runs")
+    ax.scatter([0.05], [mt["DDNN-JSU-pEns"]], marker="X", s=110, color="#6250d6",
+               edgecolor="white", linewidth=1.5, label="pEns", zorder=3)
+    ax.scatter([0.18], [mt["DDNN-JSU-qEns"]], marker="o", s=80, facecolor="none",
+               edgecolor="#e34948", linewidth=2, label="qEns", zorder=3)
     for m, c in C_BENCH.items():
-        ax.axhline(mt[m], color=c, lw=1.6, ls="-" if "LEAR" in m else "--", label=m)
-    ax.set_xticks([0, 1], ["Normal", "JSU"])
-    ax.set_xlim(-0.6, 1.6)
+        if m in mt.index:
+            ax.axhline(mt[m], color=c, lw=1.6, ls="-" if "LEAR" in m else "--", label=m)
+    ax.set_xticks([0], ["DDNN-JSU"])
+    ax.set_xlim(-0.6, 0.6)
     ax.set_title(LABEL[h])
     ax.set_ylabel("CRPS (pinball, EUR/MWh)")
 axes[1].legend(loc="center left", bbox_to_anchor=(1.01, 0.5))
@@ -282,18 +373,25 @@ plt.show()
 md(r"""
 **Diebold–Mariano p-values** (one-sided, daily L1-norm of the 24 hourly CRPS). A small p-value in
 cell (row *i*, column *j*) means the **column** model's forecasts are significantly better than the
-**row** model's. Colour: 0 % dark green → 5 % yellow → ≥ 10 % black.
+**row** model's. Colour: 0 % dark green → 5 % yellow → ≥ 10 % black. 6 × 6 without LEAR, 7 × 7 with LEAR-QRA.
 """)
 
 code(r"""
 DM_CMAP = LinearSegmentedColormap.from_list("dm", [(0, "#0a5c0a"), (0.5, "#f5e400"), (1, "#000000")])
 DM_CMAP.set_bad("#ffffff")
-fig, axes = plt.subplots(1, 2, figsize=(14, 6.2), constrained_layout=True)
+n = len(MODELS["dm"])
+fig, axes = plt.subplots(1, 2, figsize=(4 + 1.6 * n, 1.5 + 0.8 * n), constrained_layout=True)
 for ax, h in zip(axes, H):
     dm = H[h]["dm_test"]
-    im = ax.imshow(dm.to_numpy(dtype=float), cmap=DM_CMAP, vmin=0, vmax=0.10)
-    ax.set_xticks(range(len(dm)), dm.columns, rotation=90)
-    ax.set_yticks(range(len(dm)), dm.index)
+    P = dm.to_numpy(dtype=float)
+    im = ax.imshow(P, cmap=DM_CMAP, vmin=0, vmax=0.10)
+    for i in range(n):
+        for j in range(n):
+            if np.isfinite(P[i, j]):
+                ax.text(j, i, f"{P[i, j]:.2f}", ha="center", va="center", fontsize=7,
+                        color="white" if (P[i, j] < 0.02 or P[i, j] > 0.08) else INK)
+    ax.set_xticks(range(n), dm.columns, rotation=90)
+    ax.set_yticks(range(n), dm.index)
     ax.grid(False)
     ax.set_title(LABEL[h])
     ax.set_xlabel("column model (better?)")
@@ -313,13 +411,13 @@ md(r"""
 ## 5. Prediction-interval strips (adaptation of Figure 4)
 
 `plot_pi_week(horizon, start_date, days=7)` shows the realised price (black) with the 50 %, 90 %
-and 98 % central prediction intervals (q25–q75, q05–q95, q01–q99) of LEAR-QRA, DNN-QRA,
-DDNN-JSU-qEns and DDNN-N-qEns, plus the day-ahead load and RES forecasts. Any window inside the
-554-day test period of the horizon can be used.
+and 98 % central prediction intervals (q25–q75, q05–q95, q01–q99) of DNN-QRA, DDNN-JSU-pEns and
+DDNN-JSU-qEns (and LEAR-QRA when present), plus the day-ahead load and RES forecasts. Any window
+inside the 554-day test period of the horizon can be used.
 """)
 
 code(r"""
-PI_MODELS = ["LEAR-QRA", "DNN-QRA", "DDNN-JSU-qEns", "DDNN-N-qEns"]
+PI_MODELS = MODELS["pi"]
 PI_BANDS = [(98, 0, 98), (90, 4, 94), (50, 24, 74)]       # (level, lower idx, upper idx) in the 99 quantiles
 
 def plot_pi_week(horizon, start_date, days=7, models=PI_MODELS):
@@ -412,6 +510,11 @@ for k, v in META["definitions"].items():
     print(f"- {k}: {v}")
 print("\nsettings:", META["settings"])
 print("versions:", META["versions"])
+""")
+
+code(r"""
+# every network fit (one row per re-fit): anchor = OOS day index of the fit, hit_cap = epoch limit reached
+diag
 """)
 
 nb = nbf.v4.new_notebook()

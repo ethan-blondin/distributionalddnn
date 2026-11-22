@@ -10,7 +10,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .config import N_RUNS, NN_FAMILIES, TRIAL_DIR
+from .config import NN_FAMILIES, RUNS, TRIAL_DIR
 from .features import FEATURE_GROUPS
 
 
@@ -42,11 +42,11 @@ def best_trial(path: Path) -> dict:
 
 
 def load_all(trial_dir: Path = TRIAL_DIR) -> dict:
-    """{family: {run: best_trial_dict}} for DNN, DDNN-N, DDNN-JSU, runs 1..4."""
+    """{family: {run: best_trial_dict}} for the families in NN_FAMILIES and the runs in RUNS."""
     out = {}
     for family, (stem, _) in NN_FAMILIES.items():
         out[family] = {}
-        for run in range(1, N_RUNS + 1):
+        for run in RUNS:
             info = best_trial(Path(trial_dir) / f"FINAL_DE_selection_prob_{stem}{run}")
             info["feature_mask"] = {g: bool(info["params"].get(g, False)) for g in FEATURE_GROUPS}
             out[family][run] = info

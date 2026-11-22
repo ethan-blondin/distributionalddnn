@@ -22,7 +22,7 @@ INP_SIZE = 221
 
 binopt = [True, False]
 
-cty = sys.argv[1]
+cty = sys.argv[1] # takes the first argument of the command - here the name of the file to use without the extension
 
 # read data file
 data = pd.read_csv(f'../Datasets/{cty}.csv', index_col=0)
@@ -30,15 +30,20 @@ data.index = [datetime.strptime(e, '%Y-%m-%d %H:%M:%S') for e in data.index]
 # data = data.iloc[:4*364*24] # take the first 4 years - 1456 days
 
 def runoneday(inp):
+    """
+    inp = (cal, dayno)
+        - cal : the calibration window length
+        - dayno : the day before the starting day from which we take 4 year of historic  
+    """
     cal, dayno = inp
-    df = data.iloc[dayno*24:dayno*24+1456*24+24]
-    df = df[-(cal+1)*24:]
+    df = data.iloc[dayno*24:dayno*24+1456*24+24] # takes 4 years of history 
+    df = df[-(cal+1)*24:] # keeps only the calibration window
     # prepare the input/output dataframes
     Y = np.zeros((cal, 24))
     # Yf = np.zeros((1, 24)) # no Yf for rolling prediction
     for d in range(cal):
         Y[d, :] = df.loc[df.index[d*24:(d+1)*24], 'Price'].to_numpy()
-    Y = Y[7:, :] # skip first 7 days
+    Y = Y[7:, :] # skip first 7 days for training coherence (we have lags of 7 days)
     # for d in range(1):
     #     Yf[d, :] = df.loc[df.index[(d+1092)*24:(d+1093)*24], 'Price'].to_numpy()
     X = np.zeros((cal+1, INP_SIZE))
@@ -64,7 +69,7 @@ def runoneday(inp):
     predDF['real'] = df.loc[df.index[-24:], 'Price'].to_numpy()
     predDF['forecast'] = pd.NA
     for h in range(24):
-        # begin building a model
+        # begin building a model for each hour of the day
         model = sklearn.linear_model.LassoCV(eps=1e-6, n_alphas=100, cv=7)
         model.fit(X, Y[:, h])
         pred = model.predict(Xf)[0]
@@ -88,7 +93,7 @@ def runoneday(inp):
 # print(best_params)
 # print(study.trials_dataframe())
 
-inputlist = [(int(sys.argv[2]), day) for day in range(len(data) // 24 - 1456)]
+inputlist = [(int(sys.argv[2]), day) for day in range(len(data) // 24 - 1456)] #sys.argv[2] represents the time window
 print(len(inputlist))
 
 # for e in inputlist:

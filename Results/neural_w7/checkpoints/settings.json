@@ -1,0 +1,16 @@
+{
+  "retrain_every": 7,
+  "lear_retrain_every": 1,
+  "qra_refit_every": 1,
+  "chunk_days": 7,
+  "epochs": 1500,
+  "patience": 50,
+  "batch_size": 32,
+  "val_fraction": 0.2,
+  "lear_method": "ic",
+  "lear_n_alphas": 100,
+  "lear_cv": 7,
+  "base_seed": 12345,
+  "tag": "neural_w7",
+  "debug": false
+}
