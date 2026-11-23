@@ -1,6 +1,6 @@
 # specific pkl file too large to put on github
 aggregated_ddnn_comparison.pkl
-# ...except the final run, which the notebook reads (69 MB, under the 100 MB GitHub limit)
+# ...except the final run, which the notebook reads (83 MB, under the 100 MB GitHub limit)
 !Results/neural_w7/aggregated_ddnn_comparison.pkl
 
 # Byte-compiled / optimized / DLL files
