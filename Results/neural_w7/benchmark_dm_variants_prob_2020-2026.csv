@@ -1,0 +1,12 @@
+column (better?),wins_L1,wins_L2,wins_L1-NW,hours_better_total
+naive,0,0,0,0
+LEAR-QRA,4,1,3,110
+DNN-QRA,7,3,4,132
+DDNN-JSU-1,3,3,2,59
+DDNN-JSU-2,1,1,1,25
+DDNN-JSU-pEns,5,10,5,114
+DDNN-JSU-qEns,5,9,5,113
+DDNN-Normal-1,2,4,2,52
+DDNN-Normal-2,2,2,2,40
+DDNN-Normal-pEns,4,6,4,97
+DDNN-Normal-qEns,4,5,4,94

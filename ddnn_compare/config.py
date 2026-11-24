@@ -44,28 +44,30 @@ N_RUNS = len(RUNS)
 NN_FAMILIES = {            # family -> (trialfile stem, output distribution)
     "DNN": ("point", None),
     "DDNN-JSU": ("jsu", "JSU"),
+    "DDNN-Normal": ("normal", "Normal"),   # appended last: nn_seed() of earlier families unchanged
 }
-MODEL_GROUPS = ("DNN", "DDNN-JSU", "LEAR")   # selectable with --models
+MODEL_GROUPS = ("DNN", "DDNN-JSU", "DDNN-Normal", "LEAR")   # selectable with --models
 DEFAULT_GROUPS = ("DNN", "DDNN-JSU")         # LEAR is wired in but off by default
 # Days each family must forecast (OOS indices 0..735). DNN and LEAR feed QRA, which
 # needs the 182 calibration days; DDNN-JSU is only evaluated on the 554 test days.
-FAMILY_DAYS = {"DNN": (0, N_OOS), "DDNN-JSU": (N_QRA, N_OOS), "LEAR": (0, N_OOS)}
+FAMILY_DAYS = {"DNN": (0, N_OOS), "DDNN-JSU": (N_QRA, N_OOS), "DDNN-Normal": (N_QRA, N_OOS), "LEAR": (0, N_OOS)}
 
 
 def model_lists(groups) -> dict:
     """Model names present in a run with the given model groups."""
     g = set(groups)
-    lear, dnn, jsu = "LEAR" in g, "DNN" in g, "DDNN-JSU" in g
+    lear, dnn, jsu, nrm = "LEAR" in g, "DNN" in g, "DDNN-JSU" in g, "DDNN-Normal" in g
     jsu_runs = [f"DDNN-JSU-{r}" for r in RUNS]
+    ddnn = (jsu_runs + ["DDNN-JSU-pEns", "DDNN-JSU-qEns"] if jsu else []) + \
+           ([f"DDNN-Normal-{r}" for r in RUNS] + ["DDNN-Normal-pEns", "DDNN-Normal-qEns"] if nrm else [])
     point = ([f"LEAR-{w}" for w in LEAR_WINDOWS] + ["LEAR-Ens"] if lear else []) + \
             ([f"DNN-{r}" for r in RUNS] + ["DNN-Ens"] if dnn else [])
-    prob = ["naive"] + (["LEAR-QRA"] if lear else []) + (["DNN-QRA"] if dnn else []) + \
-           (jsu_runs + ["DDNN-JSU-pEns", "DDNN-JSU-qEns"] if jsu else [])
-    dm = ["naive"] + (["LEAR-QRA"] if lear else []) + (["DNN-QRA"] if dnn else []) + \
-         (jsu_runs + ["DDNN-JSU-pEns", "DDNN-JSU-qEns"] if jsu else [])
+    prob = ["naive"] + (["LEAR-QRA"] if lear else []) + (["DNN-QRA"] if dnn else []) + ddnn
+    dm = list(prob)
     table1 = (["LEAR-Ens"] if lear else []) + (["DNN-Ens"] if dnn else []) + dm
     pi = (["LEAR-QRA"] if lear else []) + (["DNN-QRA"] if dnn else []) + \
-         (["DDNN-JSU-pEns", "DDNN-JSU-qEns"] if jsu else [])
+         (["DDNN-JSU-pEns", "DDNN-JSU-qEns"] if jsu else []) + \
+         (["DDNN-Normal-pEns", "DDNN-Normal-qEns"] if nrm else [])
     return {"point": point, "probabilistic": prob, "dm": dm, "table1": table1, "pi": pi}
 
 

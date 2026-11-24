@@ -1,7 +1,9 @@
-# specific pkl file too large to put on github
-aggregated_ddnn_comparison.pkl
-# ...except the final run, which the notebook reads (83 MB, under the 100 MB GitHub limit)
-!Results/neural_w7/aggregated_ddnn_comparison.pkl
+# aggregated results: > 100 MB GitHub limit, rebuilt from the committed checkpoints in ~2 min with
+#   python run_comparative_experiments.py --models DNN DDNN-JSU DDNN-Normal LEAR
+aggregated_ddnn_comparison*.pkl
+# local run logs and macOS metadata
+Results/*/*_stdout.txt
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

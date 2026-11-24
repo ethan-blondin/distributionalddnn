@@ -15,3 +15,5 @@ tf_keras==2.21.0        # legacy Keras 2 (TF_USE_LEGACY_KERAS=1)
 optuna==5.1.0
 nbformat==5.11.1
 ipykernel==7.4.0
+jinja2==3.1.6           # pandas .style tables in the notebook
+tabulate==0.10.0        # markdown tables in benchmark.py

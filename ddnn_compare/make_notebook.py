@@ -373,16 +373,18 @@ plt.show()
 md(r"""
 **Diebold–Mariano p-values** (one-sided, daily L1-norm of the 24 hourly CRPS). A small p-value in
 cell (row *i*, column *j*) means the **column** model's forecasts are significantly better than the
-**row** model's. Colour: 0 % dark green → 5 % yellow → ≥ 10 % black. 6 × 6 without LEAR, 7 × 7 with LEAR-QRA.
+**row** model's. Colour: 0 % dark green → 5 % yellow → ≥ 10 % black. For readability the heatmap keeps only
+the naive benchmark, the QRA models and the DDNN ensembles (pEns / qEns); the individual runs are in the table below.
 """)
 
 code(r"""
 DM_CMAP = LinearSegmentedColormap.from_list("dm", [(0, "#0a5c0a"), (0.5, "#f5e400"), (1, "#000000")])
 DM_CMAP.set_bad("#ffffff")
-n = len(MODELS["dm"])
+DM_MODELS = [m for m in MODELS["dm"] if not m[-1].isdigit()]    # drop individual runs (…-1, …-2)
+n = len(DM_MODELS)
 fig, axes = plt.subplots(1, 2, figsize=(4 + 1.6 * n, 1.5 + 0.8 * n), constrained_layout=True)
 for ax, h in zip(axes, H):
-    dm = H[h]["dm_test"]
+    dm = H[h]["dm_test"].loc[DM_MODELS, DM_MODELS]
     P = dm.to_numpy(dtype=float)
     im = ax.imshow(P, cmap=DM_CMAP, vmin=0, vmax=0.10)
     for i in range(n):
@@ -394,7 +396,7 @@ for ax, h in zip(axes, H):
     ax.set_yticks(range(n), dm.index)
     ax.grid(False)
     ax.set_title(LABEL[h])
-    ax.set_xlabel("column model (better?)")
+    ax.set_xlabel("column model")
 axes[0].set_ylabel("row model")
 cb = fig.colorbar(im, ax=axes, shrink=0.8, ticks=[0, 0.025, 0.05, 0.075, 0.10])
 cb.ax.set_yticklabels(["0%", "2.5%", "5%", "7.5%", "≥10%"])
@@ -402,7 +404,7 @@ plt.show()
 """)
 
 code(r"""
-# table view of the DM p-values
+# table view of the DM p-values (all models, individual runs included)
 pd.concat({LABEL[h]: H[h]["dm_test"] for h in H}).style.format("{:.3f}", na_rep="–")
 """)
 
