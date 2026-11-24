@@ -408,27 +408,54 @@ pd.concat({LABEL[h]: H[h]["dm_test"] for h in H}).style.format("{:.3f}", na_rep=
 
 # --------------------------------------------------------------------------- #
 md(r"""
-## 5. Prediction-interval strips (adaptation of Figure 4)
+## 5. Prediction intervals, price distribution & model scores per window (adaptation of Figure 4)
 
-`plot_pi_week(horizon, start_date, days=7)` shows the realised price (black) with the 50 %, 90 %
-and 98 % central prediction intervals (q25–q75, q05–q95, q01–q99) of DNN-QRA, DDNN-JSU-pEns and
-DDNN-JSU-qEns (and LEAR-QRA when present), plus the day-ahead load and RES forecasts. Any window
-inside the 554-day test period of the horizon can be used.
+`analyse_window(horizon, start_date, days=7)` produces four blocks for any window inside the
+554-day test period of a horizon:
+
+1. **PI strip** (`plot_pi_week`): realised price (black) with the 50 %, 90 % and 98 % central
+   prediction intervals (q25–q75, q05–q95, q01–q99) of DNN-QRA, DDNN-JSU-pEns, DDNN-JSU-qEns (and
+   LEAR-QRA when present), plus the day-ahead load and RES forecasts.
+2. **Price distribution** (`plot_price_dist`): histogram and density of the window's hourly prices
+   against the density of the whole test period (left), and the window's prices by hour of day
+   against the test-period hourly median (right).
+3. **Price statistics** (`window_price_stats`): window vs whole test period. The last column
+   (window ÷ test period) is given for the location and scale statistics only. A std ratio > 1
+   means the window is more volatile than the test period as a whole.
+4. **Model scores in the window** (`window_metrics`): MAE (median), RMSE (mean), CRPS (pinball over
+   99 percentiles), and for the 50 % / 90 % PIs the share of hours inside the interval and the
+   Kupiec p-value. **Bold** = best value in each column; Kupiec p-values below 5 % (coverage
+   rejected) are in red.
+
+Kupiec in the window is computed on the pooled hours (24 × `days` observations), not per hour as
+in Table 1: with 7 observations per hour the per-hour test has almost no power. Hours of one day
+are not independent, so read the p-value as indicative. Window scores over the full test period
+reproduce Table 1 exactly; absolute scores are in EUR/MWh and scale with the window's price level
+and volatility, so compare models **within** a window, and windows through the summary in 5e.
 """)
 
 code(r"""
+from IPython.display import display
+from ddnn_compare.evaluation import crps_hourly, kupiec
+
 PI_MODELS = MODELS["pi"]
 PI_BANDS = [(98, 0, 98), (90, 4, 94), (50, 24, 74)]       # (level, lower idx, upper idx) in the 99 quantiles
+WINDOW_MODELS = MODELS["table1"]                           # point ensembles (MAE/RMSE only) + probabilistic models
+C_PI = {**C_BENCH, "DDNN-JSU-pEns": "#6250d6", "DDNN-JSU-qEns": "#e34948"}   # same colours as section 4
+WINDOWS = {}                                               # label -> results of analyse_window (used in 5e)
 
-def plot_pi_week(horizon, start_date, days=7, models=PI_MODELS):
-    res = H[horizon]
-    dates = pd.DatetimeIndex(res["test_dates"])
+def window_slice(horizon, start_date, days):
+    dates = pd.DatetimeIndex(H[horizon]["test_dates"])
     start = pd.Timestamp(start_date).normalize()
     if start not in dates or dates.get_loc(start) + days > len(dates):
         raise ValueError(f"{start.date()} + {days} d is outside the test period "
                          f"{dates[0].date()} -> {dates[-1].date()} of {horizon}")
     i0 = dates.get_loc(start)
-    sl = slice(i0, i0 + days)
+    return start, slice(i0, i0 + days)
+
+def plot_pi_week(horizon, start_date, days=7, models=PI_MODELS):
+    res = H[horizon]
+    start, sl = window_slice(horizon, start_date, days)
     idx = pd.date_range(start, periods=days * 24, freq="h")
     real = res["actuals"][sl].reshape(-1)
     fig, axes = plt.subplots(len(models) + 1, 1, figsize=(12, 2.1 * (len(models) + 1)), sharex=True)
@@ -462,29 +489,202 @@ def extreme_week(horizon, kind, days=7):
     return pd.Timestamp(H[horizon]["test_dates"][start])
 """)
 
+code(r"""
+# ---- per-window price distribution & model scores ----
+RATIO_STATS = ["mean", "std", "variance", "IQR", "mean daily range"]
+
+def _price_stats(y):                     # y: (days, 24) hourly prices
+    v = y.reshape(-1)
+    q1, q3 = np.percentile(v, [25, 75])
+    return pd.Series({"mean": v.mean(), "std": v.std(ddof=1), "variance": v.var(ddof=1),
+                      "CV (std / |mean|)": v.std(ddof=1) / abs(v.mean()), "min": v.min(), "max": v.max(),
+                      "IQR": q3 - q1, "mean daily range": (y.max(1) - y.min(1)).mean(),
+                      "negative hours (%)": 100 * (v < 0).mean()})
+
+def window_price_stats(horizon, start_date, days=7):
+    _, sl = window_slice(horizon, start_date, days)
+    a = H[horizon]["actuals"]
+    df = pd.DataFrame({"window": _price_stats(a[sl]), "test period": _price_stats(a)})
+    df["window / test period"] = (df["window"] / df["test period"]).where(df.index.isin(RATIO_STATS))
+    return df
+
+def plot_price_dist(horizon, start_date, days=7):
+    start, sl = window_slice(horizon, start_date, days)
+    a = H[horizon]["actuals"]
+    w = a[sl]
+    c = C_HOR[horizon]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 3.6), gridspec_kw={"width_ratios": [1, 1.4]})
+    lo, hi = np.percentile(a, [0.5, 99.5])
+    lo, hi = min(lo, w.min()), max(hi, w.max())
+    grid = np.linspace(lo, hi, 400)
+    ax1.hist(w.ravel(), bins=30, range=(lo, hi), density=True, color=c, alpha=0.3,
+             edgecolor="white", linewidth=0.6, label="window (histogram)")
+    ax1.plot(grid, stats.gaussian_kde(w.ravel())(grid), color=c, lw=2, label="window (density)")
+    ax1.plot(grid, stats.gaussian_kde(a.ravel())(grid), color=MUTED, lw=1.5, ls="--", label="test period (density)")
+    ax1.set_xlabel("EUR/MWh")
+    ax1.set_ylabel("density")
+    ax1.set_title(f"Hourly prices: std {w.std(ddof=1):.1f} in window vs {a.std(ddof=1):.1f} in test period",
+                  loc="left", fontsize=9)
+    ax1.legend(loc="best")
+    bp = ax2.boxplot(w, positions=range(24), widths=0.6, patch_artist=True,
+                     medianprops=dict(color=INK, lw=1.2), whiskerprops=dict(color=MUTED),
+                     capprops=dict(color=MUTED), flierprops=dict(marker="o", ms=3, mfc=c, mec="white", mew=0.5))
+    for b in bp["boxes"]:
+        b.set(facecolor=c, alpha=0.45, edgecolor=c)
+    ax2.plot(range(24), np.median(a, 0), color=MUTED, lw=1.5, ls="--", label="test-period median")
+    ax2.set_xticks(range(0, 24, 3), range(0, 24, 3))
+    ax2.set_xlabel("hour of day")
+    ax2.set_ylabel("EUR/MWh")
+    ax2.set_title(f"Window prices by hour (box = IQR over the {days} days)", loc="left", fontsize=9)
+    ax2.legend(loc="upper left")
+    fig.suptitle(f"{LABEL[horizon]}: price distribution, {start.date()} → "
+                 f"{(start + pd.Timedelta(days=days - 1)).date()}", x=0.01, ha="left", fontsize=11)
+    fig.tight_layout()
+    return fig
+
+MET_COLS = ["MAE", "RMSE", "CRPS (Pinball)", "Coverage 50% (%)", "Kupiec 50% p-value",
+            "Coverage 90% (%)", "Kupiec 90% p-value"]
+
+def window_metrics(horizon, start_date, days=7, models=WINDOW_MODELS):
+    _, sl = window_slice(horizon, start_date, days)
+    res = H[horizon]
+    y = res["actuals"][sl]
+    rows = {}
+    for m in models:
+        pf = res["point_forecasts"][m]
+        r = {"MAE": np.abs(pf["median"][sl] - y).mean(), "RMSE": np.sqrt(((pf["mean"][sl] - y) ** 2).mean())}
+        if m in res["quantiles"]:
+            q = res["quantiles"][m][sl]
+            r["CRPS (Pinball)"] = crps_hourly(q, y).mean()
+            yy, qq = y.reshape(-1, 1), q.reshape(-1, 1, 99)          # pool all hours of the window
+            for cov, lo, hi in ((50, 24, 74), (90, 4, 94)):
+                r[f"Coverage {cov}% (%)"] = 100 * ((yy >= qq[..., lo]) & (yy <= qq[..., hi])).mean()
+                r[f"Kupiec {cov}% p-value"] = kupiec(yy, qq[..., lo], qq[..., hi], cov / 100)[0]
+        rows[m] = r
+    return pd.DataFrame(rows).T.reindex(columns=MET_COLS)
+
+def style_window_metrics(df):
+    def bold_best(col):
+        best = col.max() if "Kupiec" in col.name else col.min()
+        return ["font-weight: bold" if np.isfinite(v) and np.isclose(v, best) else "" for v in col]
+    kup = [c for c in df.columns if "Kupiec" in c]
+    fmt = {c: ("{:.3f}" if "Kupiec" in c else "{:.1f}" if "Coverage" in c else "{:.2f}") for c in df.columns}
+    return (df.style.apply(bold_best, axis=0, subset=[c for c in df.columns if "Coverage" not in c])
+              .map(lambda v: "color: #e34948" if np.isfinite(v) and v < 0.05 else "", subset=kup)
+              .format(fmt, na_rep=""))
+
+def analyse_window(horizon, start_date, days=7, label=None, pi=True, dist=True):
+    start, _ = window_slice(horizon, start_date, days)
+    label = label or f"{LABEL[horizon]} {start.date()}"
+    if pi:
+        plot_pi_week(horizon, start, days); plt.show()
+    if dist:
+        plot_price_dist(horizon, start, days); plt.show()
+    ps, wm = window_price_stats(horizon, start, days), window_metrics(horizon, start, days)
+    display(ps.style.format("{:.2f}", na_rep="").set_caption(f"{label}: hourly price statistics (EUR/MWh)"))
+    display(style_window_metrics(wm).set_caption(f"{label}: model scores in the window "
+                                                 f"({days} d × 24 h; MAE/RMSE/CRPS in EUR/MWh)"))
+    WINDOWS[label] = {"horizon": horizon, "start": start, "days": days, "price": ps, "metrics": wm}
+    return WINDOWS[label]
+""")
+
+COMMENT = "> **Commentary.** _To be written: what the price distribution and the scores above show._"
+
 md("### 5a. Paper benchmark week (sanity check): 2020-09-12 → 2020-09-18, 2015–2020 horizon")
 code(r"""
-fig = plot_pi_week("2015-2020", "2020-09-12"); plt.show()
+_ = analyse_window("2015-2020", "2020-09-12", label="5a paper week (2015–2020)")
 """)
+md(COMMENT)
 
 md("### 5b. 2020–2026: week around the most negative test-period price")
 code(r"""
 wk = extreme_week("2020-2026", "negative"); print("start:", wk.date())
-fig = plot_pi_week("2020-2026", wk); plt.show()
+_ = analyse_window("2020-2026", wk, label="5b negative-price week (2020–2026)")
 """)
+md(COMMENT)
 
 md("### 5c. 2020–2026: week around the highest test-period price spike")
 code(r"""
 wk = extreme_week("2020-2026", "spike"); print("start:", wk.date())
-fig = plot_pi_week("2020-2026", wk); plt.show()
+_ = analyse_window("2020-2026", wk, label="5c spike week (2020–2026)")
 """)
+md(COMMENT)
 
 md("### 5d. Custom window\nChange `HORIZON`, `START` and `DAYS` and re-run the cell.")
 code(r"""
 HORIZON, DAYS = "2020-2026", 7
 START = pd.Timestamp(H[HORIZON]["test_dates"][100])     # e.g. "2025-12-22"
-fig = plot_pi_week(HORIZON, START, DAYS); plt.show()
+_ = analyse_window(HORIZON, START, DAYS, label="5d custom window")
 """)
+md(COMMENT)
+
+md(r"""
+### 5e. Summary across windows & accuracy vs daily price volatility
+
+`window_summary(table=True, chart=True)`: set either argument to `False` to hide that part.
+
+- **Table**: one row per window analysed above, with its price std, the std ratio to the test
+  period, and the CRPS of each probabilistic model (**bold** = best in the window).
+- **Chart**: every test day is assigned to a quintile of *daily* price volatility (std of its 24
+  hourly prices, ~111 days per quintile). Top: mean CRPS of each model per quintile (EUR/MWh).
+  Bottom: CRPS improvement over the naive benchmark per quintile (%, higher = better), as in
+  Table 1. Uses the whole test period, so it checks whether the rankings seen in single weeks
+  hold across all high-volatility days. DDNN-JSU-pEns and -qEns are usually so close that their
+  curves overlap.
+""")
+
+code(r"""
+def window_summary(table=True, chart=True, models=PI_MODELS, n_bins=5):
+    if table:
+        if not WINDOWS:
+            print("No window analysed yet - run the cells of 5a-5d first.")
+        else:
+            prob = MODELS["dm"]
+            rows = {}
+            for lab, w in WINDOWS.items():
+                r = {"horizon": LABEL[w["horizon"]], "start": w["start"].date(), "days": w["days"],
+                     "price std": w["price"].loc["std", "window"],
+                     "std ratio": w["price"].loc["std", "window / test period"]}
+                r.update(w["metrics"].loc[prob, "CRPS (Pinball)"].to_dict())
+                r["best (CRPS)"] = w["metrics"].loc[prob, "CRPS (Pinball)"].idxmin()
+                rows[lab] = r
+            summ = pd.DataFrame(rows).T
+            num = ["price std", "std ratio"] + prob
+            summ[num] = summ[num].astype(float)
+            bold = lambda row: ["font-weight: bold" if np.isclose(v, row.min()) else "" for v in row]
+            display(summ.style.apply(bold, axis=1, subset=prob)
+                        .format({c: "{:.2f}" for c in num})
+                        .set_caption("CRPS (Pinball, EUR/MWh) per analysed window"))
+    if chart:
+        fig, axes = plt.subplots(2, len(H), figsize=(12, 6.4), sharex="col")
+        for j, h in enumerate(H):
+            a = H[h]["actuals"]
+            crps_d = H[h]["daily_crps_l1"] / 24                               # mean hourly CRPS per day
+            bins = pd.qcut(a.std(1, ddof=1), n_bins)
+            labels = [f"Q{i + 1}\n{iv.left:.0f}–{iv.right:.0f}" for i, iv in enumerate(bins.categories)]
+            by_bin = crps_d.groupby(np.asarray(bins.codes)).mean()
+            rel = 100 * (by_bin["naive"].to_numpy()[:, None] - by_bin) / by_bin["naive"].to_numpy()[:, None]
+            x = np.arange(n_bins)
+            for m in models:
+                if m not in by_bin:
+                    continue
+                kw = dict(color=C_PI.get(m, MUTED), lw=2, marker="o", ms=6, mec="white", mew=1, label=m)
+                axes[0, j].plot(x, by_bin[m], **kw)
+                axes[1, j].plot(x, rel[m], **kw)
+            if np.nanmin(rel[[m for m in models if m in rel]].to_numpy()) < 0:
+                axes[1, j].axhline(0, color=MUTED, lw=0.8)        # only when some model is worse than naive
+            axes[0, j].set_title(LABEL[h], loc="left")
+            axes[0, j].set_ylabel("mean CRPS (EUR/MWh)")
+            axes[1, j].set_ylabel("CRPS improvement vs naive (%)")
+            axes[1, j].set_xticks(x, labels)
+            axes[1, j].set_xlabel("quintile of daily price std (EUR/MWh)")
+        axes[0, -1].legend(loc="center left", bbox_to_anchor=(1.01, 0.5))
+        fig.tight_layout()
+        plt.show()
+
+window_summary(table=True, chart=True)
+""")
+md(COMMENT)
 
 # --------------------------------------------------------------------------- #
 md("## Appendix A. Hyper-parameters re-used from the paper's Optuna studies")
